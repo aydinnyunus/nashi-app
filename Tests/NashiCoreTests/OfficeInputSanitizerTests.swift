@@ -126,9 +126,14 @@ final class OfficeInputSanitizerTests: XCTestCase {
         <office:document-content xmlns:xlink="http://www.w3.org/1999/xlink"><draw:image xlink:href="file:///tmp/\(secret).png"/></office:document-content>
         """
         let input = base.appendingPathComponent("declared.odt")
-        try flat.write(to: input, atomically: true, encoding: .utf8)
+        let payload = try XCTUnwrap(flat.data(using: .utf16LittleEndian))
+        try (Data([0xff, 0xfe]) + payload).write(to: input)
         let output = base.appendingPathComponent(UUID().uuidString + ".odt")
         try OfficeInputSanitizer.sanitize(input, output: output, token: .init())
+        // The input really is UTF-16, so the staged file must be re-declared UTF-8 bytes.
+        let staged = try Data(contentsOf: output)
+        XCTAssertFalse(staged.starts(with: [0xff, 0xfe]))
+        XCTAssertNotNil(String(data: staged, encoding: .utf8))
         let text = try DocumentText.read(output)
         // The staged bytes are UTF-8, and only the encoding name may change.
         XCTAssertTrue(text.hasPrefix("<?xml version=\"1.0\" encoding='UTF-8' standalone='yes'?>"), String(text.prefix(120)))
