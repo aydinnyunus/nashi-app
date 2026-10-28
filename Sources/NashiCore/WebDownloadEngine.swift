@@ -27,7 +27,8 @@ public enum WebDownloadEngine {
         let value=text.trimmingCharacters(in:.whitespacesAndNewlines)
         guard value.utf8.count<=16_384,!value.unicodeScalars.contains(where:{CharacterSet.whitespacesAndNewlines.contains($0) || CharacterSet.controlCharacters.contains($0)}),
               let url=URL(string:value),let scheme=url.scheme?.lowercased(),["http","https"].contains(scheme),
-              let host=url.host,!host.isEmpty,url.user==nil,url.password==nil else {
+              let host=url.host,!host.isEmpty,url.user==nil,url.password==nil,
+              PublicWebHost.allows(host) else {
             throw NashiError.invalidInput("Paste one complete http:// or https:// media link.")
         }
         return url

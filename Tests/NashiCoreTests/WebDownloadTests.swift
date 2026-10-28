@@ -6,6 +6,27 @@ final class WebDownloadTests:XCTestCase {
         for value in ["file:///tmp/a.mp4","javascript:alert(1)","blob:https://example.org/id","https://u:p@example.org/a","https://a.org/a https://b.org/b","https://a.org/a\nb","https://a.org/\tb",""] { XCTAssertThrowsError(try WebDownloadEngine.link(value),value) }
         XCTAssertEqual(try WebDownloadEngine.link("  https://example.org/a?q=a%20b  ").host,"example.org")
     }
+    func testPrivateAndMetadataHostsAreRejected() {
+        for value in [
+            "http://127.0.0.1/media.mp4",
+            "http://localhost/media.mp4",
+            "http://foo.localhost/media.mp4",
+            "http://printer.local/media.mp4",
+            "http://10.0.0.5/media.mp4",
+            "http://172.16.4.2/media.mp4",
+            "http://192.168.1.10/media.mp4",
+            "http://169.254.169.254/latest/meta-data/",
+            "http://100.64.1.2/media.mp4",
+            "http://0.0.0.0/media.mp4",
+            "http://[::1]/media.mp4",
+            "http://[fc00::1]/media.mp4",
+            "http://[fe80::1]/media.mp4",
+            "http://[::ffff:127.0.0.1]/media.mp4",
+            "http://[::ffff:169.254.169.254]/latest/"
+        ] { XCTAssertThrowsError(try WebDownloadEngine.link(value),value) }
+        XCTAssertEqual(try? WebDownloadEngine.link("https://example.org/watch").host,"example.org")
+        XCTAssertEqual(try? WebDownloadEngine.link("https://8.8.8.8/media.mp4").host,"8.8.8.8")
+    }
     func testManifestsAndHTMLAreNotDirectMedia() {
         XCTAssertNil(WebDownloadEngine.directKind(mime:"application/vnd.apple.mpegurl",extension:"m3u8"))
         XCTAssertNil(WebDownloadEngine.directKind(mime:"text/html",extension:"mp4"))
