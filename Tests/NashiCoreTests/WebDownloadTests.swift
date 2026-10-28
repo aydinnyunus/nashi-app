@@ -27,6 +27,31 @@ final class WebDownloadTests:XCTestCase {
         XCTAssertEqual(try? WebDownloadEngine.link("https://example.org/watch").host,"example.org")
         XCTAssertEqual(try? WebDownloadEngine.link("https://8.8.8.8/media.mp4").host,"8.8.8.8")
     }
+    func testLegacyNumericIPv4SpellingsAreRejected() {
+        for value in ["http://2130706433/media.mp4","http://0x7f000001/media.mp4","http://0177.0.0.1/media.mp4","http://127.1/media.mp4","http://3232235777/media.mp4","http://[fe80::1%25en0]/media.mp4"] { XCTAssertThrowsError(try WebDownloadEngine.link(value),value) }
+        XCTAssertEqual(try? WebDownloadEngine.link("https://8.8.8.8/media.mp4").host,"8.8.8.8")
+    }
+    func testEmbeddedIPv6SpellingsReuseTheIPv4Policy() {
+        for value in ["http://[64:ff9b::7f00:1]/media.mp4","http://[64:ff9b::a00:1]/media.mp4","http://[2002:7f00:1::]/media.mp4","http://[::7f00:1]/media.mp4","http://[64:ff9b:1::1]/media.mp4","http://[2001:0000:4000:1234:1:2:3:4]/media.mp4"] { XCTAssertThrowsError(try WebDownloadEngine.link(value),value) }
+        XCTAssertNoThrow(try WebDownloadEngine.link("https://[64:ff9b::808:808]/media.mp4"))
+        XCTAssertNoThrow(try WebDownloadEngine.link("https://[2002:808:808::]/media.mp4"))
+    }
+    func testHostnamesAreRefusedUnlessEveryAnswerIsPublic() {
+        let table:[String:[String]?]=[
+            "rebind.evil":["127.0.0.1"],
+            "split.evil":["93.184.216.34","10.0.0.1"],
+            "nat64.evil":["64:ff9b::a00:1"],
+            "mapped.evil":["::ffff:169.254.169.254"],
+            "dead.evil":nil,
+            "empty.evil":[],
+            "media.good":["93.184.216.34"]
+        ]
+        let resolve:PublicWebHost.Resolver={ table[$0] ?? nil }
+        for host in ["rebind.evil","split.evil","nat64.evil","mapped.evil","dead.evil","empty.evil","missing.evil"] { XCTAssertFalse(PublicWebHost.egressAllowed(host,resolve:resolve),host) }
+        XCTAssertTrue(PublicWebHost.egressAllowed("media.good",resolve:resolve))
+        XCTAssertTrue(PublicWebHost.egressAllowed("8.8.8.8",resolve:resolve))
+        XCTAssertFalse(PublicWebHost.egressAllowed("10.0.0.1",resolve:resolve))
+    }
     func testManifestsAndHTMLAreNotDirectMedia() {
         XCTAssertNil(WebDownloadEngine.directKind(mime:"application/vnd.apple.mpegurl",extension:"m3u8"))
         XCTAssertNil(WebDownloadEngine.directKind(mime:"text/html",extension:"mp4"))
