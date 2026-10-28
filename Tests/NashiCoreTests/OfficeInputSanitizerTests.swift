@@ -27,9 +27,11 @@ final class OfficeInputSanitizerTests: XCTestCase {
         try ArchiveCodec.extract(output, into: unpacked, token: .init())
         var parts: [String: String] = [:]
         for ext in extensions {
-            let walk = FileManager.default.enumerator(at: unpacked, includingPropertiesForKeys: nil)!
-            for case let url as URL in walk where url.pathExtension.lowercased() == ext {
-                parts[url.path.replacingOccurrences(of: unpacked.path + "/", with: "")] = try DocumentText.read(url)
+            // enumerator(at:) hands back resolved paths ("/private/var/..." for a "/var/..."
+            // temporary directory), so the keys come from the relative enumerator instead.
+            guard let walk = FileManager.default.enumerator(atPath: unpacked.path) else { continue }
+            for case let relative as String in walk where (relative as NSString).pathExtension.lowercased() == ext {
+                parts[relative] = try DocumentText.read(unpacked.appendingPathComponent(relative))
             }
         }
         return parts
@@ -53,7 +55,7 @@ final class OfficeInputSanitizerTests: XCTestCase {
         let (input, base) = try package(["_rels/document.xml.rels": rels, "word/document.xml": "<a/>"])
         defer { try? FileManager.default.removeItem(at: base) }
         let parts = try sanitizedParts(input, extensions: ["rels"], base: base)
-        let text = parts["_rels/document.xml.rels"] ?? ""
+        let text = try XCTUnwrap(parts["_rels/document.xml.rels"], "The relationship part never reached the staged package")
         for removed in ["rIdDouble", "rIdSingle", "rIdEntity", "rIdSpacing", "rIdDotDot", "rIdDrive", "rIdUnc"] {
             XCTAssertFalse(text.contains(removed), "\(removed) still points at a host path")
         }
@@ -71,13 +73,13 @@ final class OfficeInputSanitizerTests: XCTestCase {
         let (input, base) = try package(["word/document.xml": document, "word/media/image1.svg": vector])
         defer { try? FileManager.default.removeItem(at: base) }
         let parts = try sanitizedParts(input, extensions: ["xml", "svg"], base: base)
-        let text = parts["word/document.xml"] ?? ""
+        let text = try XCTUnwrap(parts["word/document.xml"], "The document part never reached the staged package")
         XCTAssertEqual(text.components(separatedBy: "about:blank").count - 1, 4)
         XCTAssertTrue(text.contains(#"xlink:href="about:blank""#))
         XCTAssertTrue(text.contains("xl:href='about:blank'"), "The original quote style has to be restored")
-        XCTAssertTrue(text.contains(#"data-src="file:///tmp/#(secret)-kept.png""#), "data-src is not a resource reference")
+        XCTAssertTrue(text.contains(#"data-src="file:///tmp/\#(secret)-kept.png""#), "data-src is not a resource reference")
         XCTAssertFalse(text.contains(secret + ".png"))
-        let embedded = parts["word/media/image1.svg"] ?? ""
+        let embedded = try XCTUnwrap(parts["word/media/image1.svg"], "The SVG part never reached the staged package")
         XCTAssertTrue(embedded.contains("about:blank"), "An SVG part resolves its own xlink:href")
         XCTAssertFalse(embedded.contains(secret))
     }
