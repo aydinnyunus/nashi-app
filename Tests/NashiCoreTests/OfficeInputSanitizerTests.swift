@@ -107,6 +107,55 @@ final class OfficeInputSanitizerTests: XCTestCase {
         XCTAssertFalse(text.contains(secret), "The base value must not survive in the staged part")
     }
 
+    /// Rewriting text instead of an attribute deletes the markup around it: an
+    /// unquoted value match runs to the next quote in the file, and that quote can
+    /// belong to a later tag, so the replacement swallows the closing tag and the
+    /// element behind it. The prose below is the shape a reviewer reported, and a
+    /// document-internal reference follows it, so the text has to survive verbatim
+    /// while the real attribute in the same part is still stripped.
+    func testAttributeLikeTextSurvivesAndRealAttributesAreStillStripped() throws {
+        let base = try OutputFiles.temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: base) }
+        let flat = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <office:document-content xmlns:xlink="http://www.w3.org/1999/xlink"><office:body><office:text><text:p>xml:base="file:///tmp</text:p><draw:image xlink:href="Pictures/kept.png"/><text:p>the src="file:///tmp/deep.png" in this sentence is prose</text:p><draw:image xlink:href="file:///tmp/\(secret).png"/></office:text></office:body></office:document-content>
+        """
+        let input = base.appendingPathComponent("prose.odt")
+        try flat.write(to: input, atomically: true, encoding: .utf8)
+        let output = base.appendingPathComponent(UUID().uuidString + ".odt")
+        try OfficeInputSanitizer.sanitize(input, output: output, token: .init())
+        let text = try DocumentText.read(output)
+        XCTAssertTrue(text.contains(#"xml:base="file:///tmp</text:p>"#), "The paragraph lost its closing tag")
+        XCTAssertTrue(text.contains(#"<draw:image xlink:href="Pictures/kept.png"/>"#), "The element behind the prose was swallowed")
+        XCTAssertTrue(text.contains(#"src="file:///tmp/deep.png""#), "Prose is document text, not a reference")
+        XCTAssertEqual(text.components(separatedBy: "</text:p>").count - 1, 2, "A closing tag disappeared")
+        XCTAssertEqual(text.components(separatedBy: "<draw:image").count - 1, 2, "An element disappeared")
+        XCTAssertEqual(text.components(separatedBy: "about:blank").count - 1, 1, "Only the real attribute may be rewritten")
+        XCTAssertTrue(text.contains(#"xlink:href="about:blank""#), String(text.prefix(200)))
+        XCTAssertFalse(text.contains(secret))
+    }
+
+    /// A quote that sits in prose must not desynchronise the scan: if it opened a
+    /// value that ran across the next tag, the host path inside that tag would stay
+    /// untouched and still be fetched by the converter. A `>` inside a quoted value
+    /// is the mirror case - it may not end the tag either.
+    func testAQuoteInProseCannotHideAHostPathReference() throws {
+        let base = try OutputFiles.temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: base) }
+        let flat = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <office:document-content xmlns:xlink="http://www.w3.org/1999/xlink"><text:p>an inch is written " and an apostrophe's too</text:p><draw:image xlink:href="file:///tmp/\(secret)-hidden.png"/><draw:image xlink:href="file:///tmp/edge>\(secret)-quoted.png"/></office:document-content>
+        """
+        let input = base.appendingPathComponent("quotes.odt")
+        try flat.write(to: input, atomically: true, encoding: .utf8)
+        let output = base.appendingPathComponent(UUID().uuidString + ".odt")
+        try OfficeInputSanitizer.sanitize(input, output: output, token: .init())
+        let text = try DocumentText.read(output)
+        XCTAssertEqual(text.components(separatedBy: "<draw:image").count - 1, 2, "An element disappeared")
+        XCTAssertEqual(text.components(separatedBy: "about:blank").count - 1, 2, "Both host-path references must be neutralised")
+        XCTAssertFalse(text.contains(secret), "A host path survived behind a prose quote")
+    }
+
     func testDashPrefixedEntryNamesAreStoredInsteadOfReachingZipOptions() throws {
         let (input, base) = try package([
             "mimetype": "application/vnd.oasis.opendocument.text",

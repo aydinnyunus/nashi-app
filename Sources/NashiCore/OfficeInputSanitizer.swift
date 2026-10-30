@@ -132,16 +132,85 @@ enum OfficeInputSanitizer {
     /// Rewrites each attribute a pattern names whose value the converter would
     /// resolve outside the staged document. The attribute name and its original
     /// quote style are restored, so the part stays parseable markup.
+    ///
+    /// A pattern is only searched inside a tag. An `href=` typed into a paragraph is
+    /// document text, not an attribute, and rewriting it deletes the markup around
+    /// it: an unquoted value match runs to the next quote in the file, which can sit
+    /// past a `</text:p>` inside a later tag, so the replacement swallows that
+    /// closing tag and the element that follows it and leaves the staged part
+    /// unparseable. Tags are located first (see `tagRanges(in:)`) and the search is
+    /// confined to them.
     private static func neutralise(_ pattern: NSRegularExpression, in text: String) -> String {
         var result = text
-        let full = NSRange(text.startIndex..., in: text)
-        for match in pattern.matches(in: text, range: full).reversed() {
+        let matches = tagRanges(in: text).flatMap { pattern.matches(in: text, range: NSRange($0, in: text)) }
+        for match in matches.sorted(by: { $0.range.location > $1.range.location }) {
             guard match.numberOfRanges > 3, let name = substring(match.range(at: 1), in: text),
                   let found = attributeValue(match, in: text, doubleQuoted: 2, singleQuoted: 3),
                   isHostPath(found.value), let range = Range(match.range, in: result) else { continue }
             result.replaceSubrange(range, with: name + "=" + found.quote + "about:blank" + found.quote)
         }
         return result
+    }
+
+    /// The ranges of the tags in `text`, quoted values included. A tag starts at a
+    /// `<` that begins a name or a markup declaration and ends at the first `>`
+    /// outside a quoted attribute value; what sits between two tags is text and is
+    /// never a candidate for a rewrite.
+    ///
+    /// Quote tracking only starts once a tag is open. A `"` sitting in prose would
+    /// otherwise stay open across the next tag and hide its attributes from the
+    /// patterns, which is a way to smuggle a host path past the sanitizer, and a tag
+    /// cannot open inside a quoted value because XML forbids `<` there. The closing
+    /// `>` of a value such as `href="a>b"` is quoted, so it cannot end the tag early
+    /// either. Comments and CDATA hold text that may carry either bracket, so each is
+    /// skipped as a unit. An unterminated tag runs to the end of the part so a
+    /// truncated file is sanitised rather than passed through; a comment or CDATA
+    /// that is never closed ends the scan, which is the same verdict the converter
+    /// gives that part - it is not parseable markup, so there is no staged document
+    /// for a reference to resolve against.
+    private static func tagRanges(in text: String) -> [Range<String.Index>] {
+        var ranges: [Range<String.Index>] = []
+        var opening: String.Index?
+        var quote: Character?
+        var index = text.startIndex
+        while index < text.endIndex {
+            let character = text[index]
+            if let open = quote {
+                if character == open { quote = nil }
+            } else if opening != nil && (character == "\"" || character == "'") {
+                quote = character
+            } else if character == ">", let start = opening {
+                ranges.append(start..<text.index(after: index))
+                opening = nil
+            } else if character == "<", opening == nil {
+                let marker = text[index...]
+                if marker.hasPrefix("<![CDATA[") {
+                    let body = text.index(index, offsetBy: "<![CDATA[".count)
+                    guard let closing = text.range(of: "]]>", range: body..<text.endIndex) else { break }
+                    index = closing.upperBound
+                    continue
+                }
+                if marker.hasPrefix("<!--") {
+                    let body = text.index(index, offsetBy: "<!--".count)
+                    guard let closing = text.range(of: "-->", range: body..<text.endIndex) else { break }
+                    index = closing.upperBound
+                    continue
+                }
+                if opensTag(after: index, in: text) { opening = index }
+            }
+            index = text.index(after: index)
+        }
+        if let start = opening { ranges.append(start..<text.endIndex) }
+        return ranges
+    }
+
+    /// A `<` opens a tag only when the character after it can begin a name or a
+    /// markup declaration. A bare `<` that survived a sloppy exporter is text.
+    private static func opensTag(after index: String.Index, in text: String) -> Bool {
+        let next = text.index(after: index)
+        guard next < text.endIndex else { return false }
+        let character = text[next]
+        return character.isLetter || character == "_" || character == "/" || character == "!" || character == "?"
     }
 
     /// Drops an OOXML relationship that points outside the package through a
