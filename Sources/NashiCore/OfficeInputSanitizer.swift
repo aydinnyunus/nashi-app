@@ -30,6 +30,7 @@ enum OfficeInputSanitizer {
         for part in markupParts(in: unpacked) {
             try token.check()
             let text = try DocumentText.read(part)
+            guard !declaresDocumentType(text) else { throw NashiError.invalidInput("This document declares an XML document type (DOCTYPE), which Nashi does not convert.") }
             let clean = part.pathExtension.lowercased() == "rels" ? stripRelationships(text) : stripReferences(text)
             if clean != text { try reencode(clean).write(to: part, atomically: true, encoding: .utf8) }
         }
@@ -63,6 +64,7 @@ enum OfficeInputSanitizer {
             try fm.copyItem(at: input, to: output)
         }
         guard let text = try? DocumentText.read(input), isXMLMarkup(text) else { try copyUnchanged(); return }
+        guard !declaresDocumentType(text) else { throw NashiError.invalidInput("This document declares an XML document type (DOCTYPE), which Nashi does not convert.") }
         try token.check()
         let clean = stripReferences(text)
         guard clean != text else { try copyUnchanged(); return }
@@ -211,6 +213,20 @@ enum OfficeInputSanitizer {
         guard next < text.endIndex else { return false }
         let character = text[next]
         return character.isLetter || character == "_" || character == "/" || character == "!" || character == "?"
+    }
+
+    /// A `<!DOCTYPE` declaration can carry an internal DTD subset that defines an
+    /// entity - `<!ENTITY host "file:///tmp/secret.png">` referenced later as
+    /// `xlink:href="&host;"`. `decodeCharacterReferences` deliberately leaves a
+    /// named entity reference literal, so that value passes the host-path check
+    /// here while the converter's parser expands it before resolving the
+    /// reference. Real OOXML and ODF parts never carry a DOCTYPE, so a part that
+    /// does is refused instead of sanitised. Only a declaration counts: `tagRanges`
+    /// skips comments and CDATA and ignores a `<` that cannot open markup, so the
+    /// same string written in a paragraph or inside a comment does not trip this.
+    private static func declaresDocumentType(_ text: String) -> Bool {
+        for range in tagRanges(in: text) where text[range].lowercased().hasPrefix("<!doctype") { return true }
+        return false
     }
 
     /// Drops an OOXML relationship that points outside the package through a

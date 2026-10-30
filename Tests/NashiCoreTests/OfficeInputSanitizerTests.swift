@@ -156,6 +156,77 @@ final class OfficeInputSanitizerTests: XCTestCase {
         XCTAssertFalse(text.contains(secret), "A host path survived behind a prose quote")
     }
 
+    /// A `<!DOCTYPE` is the one spelling the sanitizer cannot see through: an
+    /// internal DTD subset can bind `&host;` to a host path, and
+    /// `decodeCharacterReferences` leaves that name literal, so `isHostPath` finds
+    /// nothing while the converter's parser expands the entity and loads the file.
+    /// Real OOXML/ODF parts never carry a DOCTYPE, so the part is refused whole -
+    /// and only a real declaration is refused, not the same text inside a comment.
+    func testPackagePartDeclaringADocumentTypeIsRefused() throws {
+        let declaration = #"<!DOCTYPE office:document-content [<!ENTITY host "file:///tmp/#" + secret + #".png">]>"#
+        let declared = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        \(declaration)
+        <office:document-content xmlns:xlink="http://www.w3.org/1999/xlink"><draw:image xlink:href="&host;"/></office:document-content>
+        """
+        let fixture = try package(["word/document.xml": declared, "word/_rels/document.xml.rels": "<Relationships/>"])
+        defer { try? FileManager.default.removeItem(at: fixture.base) }
+        let output = fixture.base.appendingPathComponent(UUID().uuidString + ".docx")
+        XCTAssertThrowsError(try OfficeInputSanitizer.sanitize(fixture.input, output: output, token: .init())) { error in
+            guard case let NashiError.invalidInput(message) = error else { return XCTFail("expected invalidInput, got \(error)") }
+            XCTAssertTrue(message.contains("DOCTYPE"), message)
+        }
+
+        // The identical text inside a comment is not a declaration: the part has to
+        // convert, the comment has to come back untouched, and the real host
+        // attribute next to it still has to be rewritten.
+        let commented = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!-- \(declaration) -->
+        <office:document-content xmlns:xlink="http://www.w3.org/1999/xlink"><draw:image xlink:href="file:///tmp/\(secret).png"/></office:document-content>
+        """
+        let control = try package(["word/document.xml": commented, "word/_rels/document.xml.rels": "<Relationships/>"])
+        defer { try? FileManager.default.removeItem(at: control.base) }
+        let parts = try sanitizedParts(control.input, extensions: ["xml"], base: control.base)
+        let staged = try XCTUnwrap(parts["word/document.xml"])
+        XCTAssertTrue(staged.contains("<!-- \(declaration) -->"), String(staged.prefix(200)))
+        XCTAssertTrue(staged.contains("xlink:href="))
+        XCTAssertFalse(staged.contains(secret))
+    }
+
+    /// The flat path takes the same verdict, and a CDATA section is the mirror case
+    /// of the comment above: markup-looking bytes that no parser will read as a
+    /// declaration must not refuse the document, and must survive verbatim.
+    func testFlatInputDeclaringADocumentTypeIsRefused() throws {
+        let base = try OutputFiles.temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: base) }
+        let declaration = #"<!DOCTYPE office:document-content [<!ENTITY host "file:///tmp/#" + secret + #".png">]>"#
+        let declared = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        \(declaration)
+        <office:document-content xmlns:xlink="http://www.w3.org/1999/xlink"><draw:image xlink:href="&host;"/></office:document-content>
+        """
+        let input = base.appendingPathComponent("declared.odt")
+        try declared.write(to: input, atomically: true, encoding: .utf8)
+        let output = base.appendingPathComponent(UUID().uuidString + ".odt")
+        XCTAssertThrowsError(try OfficeInputSanitizer.sanitize(input, output: output, token: .init())) { error in
+            guard case let NashiError.invalidInput(message) = error else { return XCTFail("expected invalidInput, got \(error)") }
+            XCTAssertTrue(message.contains("DOCTYPE"), message)
+        }
+
+        let quoted = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <office:document-content xmlns:xlink="http://www.w3.org/1999/xlink"><text:p><![CDATA[\(declaration)]]></text:p><draw:image xlink:href="file:///tmp/\(secret).png"/></office:document-content>
+        """
+        let cdataInput = base.appendingPathComponent("quoted.odt")
+        try quoted.write(to: cdataInput, atomically: true, encoding: .utf8)
+        let cdataOutput = base.appendingPathComponent(UUID().uuidString + ".odt")
+        try OfficeInputSanitizer.sanitize(cdataInput, output: cdataOutput, token: .init())
+        let staged = try DocumentText.read(cdataOutput)
+        XCTAssertTrue(staged.contains("<![CDATA[\(declaration)]]>"), String(staged.prefix(200)))
+        XCTAssertFalse(staged.contains(secret))
+    }
+
     func testDashPrefixedEntryNamesAreStoredInsteadOfReachingZipOptions() throws {
         let (input, base) = try package([
             "mimetype": "application/vnd.oasis.opendocument.text",
