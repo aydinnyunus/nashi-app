@@ -3,8 +3,9 @@ import Foundation
 /// LibreOffice resolves external resource references inside office documents
 /// at its own file permission level. The conversion sandbox only denies IP
 /// networking, so an untrusted document that carries host-path references
-/// (OOXML relationship targets or ODF href attributes) pulls local files
-/// into the export before conversion. Office inputs are therefore staged with
+/// (OOXML relationship targets, ODF href attributes or an `xml:base` that
+/// re-anchors them) pulls local files into the export before conversion.
+/// Office inputs are therefore staged with
 /// those references removed; the converter then renders its standard missing
 /// image placeholder. Package entries are rewritten without touching their
 /// internal paths, so a freshly prepared file still converts identically.
@@ -115,10 +116,26 @@ enum OfficeInputSanitizer {
     /// unrelated attributes such as `data-src` out of the rewrite.
     private static let referencePattern = regex("(?<![-_A-Za-z0-9:])((?:[A-Za-z_][-A-Za-z0-9._]*:)?(?:href|src))\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)')")
 
+    /// An `xml:base` attribute makes the converter resolve every relative
+    /// reference below it against that base, so a host-path base smuggles
+    /// otherwise innocent `href="kept.png"` targets out of the staged package.
+    /// The prefix is fixed by XML (an unrelated `base` attribute is not an XML
+    /// base), so only this exact name is considered, and only a base the
+    /// converter would resolve outside the document is rewritten: a relative
+    /// base such as `images/` describes the document's own layout and survives.
+    private static let xmlBasePattern = regex("(?<![-_A-Za-z0-9:])(xml:base)\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)')")
+
     private static func stripReferences(_ text: String) -> String {
+        neutralise(xmlBasePattern, in: neutralise(referencePattern, in: text))
+    }
+
+    /// Rewrites each attribute a pattern names whose value the converter would
+    /// resolve outside the staged document. The attribute name and its original
+    /// quote style are restored, so the part stays parseable markup.
+    private static func neutralise(_ pattern: NSRegularExpression, in text: String) -> String {
         var result = text
         let full = NSRange(text.startIndex..., in: text)
-        for match in referencePattern.matches(in: text, range: full).reversed() {
+        for match in pattern.matches(in: text, range: full).reversed() {
             guard match.numberOfRanges > 3, let name = substring(match.range(at: 1), in: text),
                   let found = attributeValue(match, in: text, doubleQuoted: 2, singleQuoted: 3),
                   isHostPath(found.value), let range = Range(match.range, in: result) else { continue }

@@ -84,6 +84,29 @@ final class OfficeInputSanitizerTests: XCTestCase {
         XCTAssertFalse(embedded.contains(secret))
     }
 
+    func testHostPathXMLBaseIsNeutralisedAndRelativeBasesSurvive() throws {
+        let document = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <office:document-content xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="file:///tmp/\(secret)/">
+        <draw:image xlink:href="picture.png"/>
+        <draw:frame xml:base='&#102;ile:///tmp/\(secret)/'><draw:image xlink:href="other.png"/></draw:frame>
+        <draw:frame xml:base="images/"><draw:image xlink:href="inside.png"/></draw:frame>
+        </office:document-content>
+        """
+        let (input, base) = try package(["content.xml": document], named: "anchored")
+        defer { try? FileManager.default.removeItem(at: base) }
+        let parts = try sanitizedParts(input, extensions: ["xml"], base: base)
+        let text = try XCTUnwrap(parts["content.xml"], "The content part never reached the staged package")
+        XCTAssertTrue(text.contains("xml:base=\"about:blank\""), "A host-path base keeps anchoring every target below it")
+        XCTAssertTrue(text.contains("xml:base='about:blank'"), "The original quote style has to be restored")
+        XCTAssertTrue(text.contains("xml:base=\"images/\""), "A document-internal base is not a host path")
+        XCTAssertEqual(text.components(separatedBy: "about:blank").count - 1, 2)
+        for kept in ["picture.png", "other.png", "inside.png"] {
+            XCTAssertTrue(text.contains(kept), kept + " is document-internal and must survive")
+        }
+        XCTAssertFalse(text.contains(secret), "The base value must not survive in the staged part")
+    }
+
     func testDashPrefixedEntryNamesAreStoredInsteadOfReachingZipOptions() throws {
         let (input, base) = try package([
             "mimetype": "application/vnd.oasis.opendocument.text",
