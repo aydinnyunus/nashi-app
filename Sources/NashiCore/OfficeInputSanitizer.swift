@@ -234,24 +234,71 @@ enum OfficeInputSanitizer {
     }
 
     /// A drawn `.svg` part does carry a document type declaration in the wild, and this converter will not
-    /// load the part without one: measured with the pinned sandbox profile, `A&nbsp;B` inside `<text>` renders
+    /// load the part without one: measured with the app's own sandbox profile, `A&nbsp;B` inside `<text>` renders
     /// with the standard `<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" …>` declaration and the same file
     /// reports "source file could not be loaded" once the declaration is removed. The declaration is therefore
-    /// kept here, in this one part type, and only while it can define nothing: no internal subset (`[…]`), no
-    /// `SYSTEM` literal, no entity declaration. A `SYSTEM` literal is refused because the package can ship the
-    /// named file beside the drawing, and a subset is refused because it defines the entity inside the part;
-    /// either would leave the converter an entity to expand, which is the shape this file exists to stop. That
-    /// the converter does not read the named DTD at all is measured too - a `SYSTEM "file:///…/evil.dtd"`
-    /// declaration whose entity points at a local file failed to load rather than printing it - so keeping a
-    /// `PUBLIC` declaration costs nothing the converter was already using. Only this machine's converter is
-    /// measured, so every refused spelling stays refused on both platforms.
+    /// kept here, in this one part type, and only while it names nothing the converter could resolve: no
+    /// internal subset (`[…]`), no `SYSTEM` keyword, no entity declaration, and no location other than the
+    /// standard W3C SVG 1.1 DTD URL. The location rule is what catches `<!DOCTYPE svg PUBLIC
+    /// "-//W3C//DTD SVG 1.1//EN" "file:///etc/x.dtd">` and a `"local.dtd"` shipped inside the package: a PUBLIC
+    /// form carries its location as a plain quoted string, so the `SYSTEM` keyword test never sees it, and
+    /// `stripReferences` does not look inside a declaration. The public identifier (`-//…`) names the
+    /// declaration rather than a place, so it stays free-form and a real export with a different identifier but
+    /// the standard location still converts; only where a DTD would be fetched from is pinned. That this
+    /// converter reads no named DTD at all is measured too - a `SYSTEM "file:///…/evil.dtd"` declaration whose
+    /// entity points at a local file failed to load rather than printing it - but nothing here leans on it, so
+    /// a converter build this machine has not measured cannot widen the rule through it.
     private static func declaresAnExpandableDocumentType(_ text: String) -> Bool {
         for range in tagRanges(in: text) {
             let tag = text[range].lowercased()
             guard tag.hasPrefix("<!doctype") else { continue }
             if tag.contains("[") || tag.contains("system") || tag.contains("entity") { return true }
+            let literals = quotedDeclarationLiterals(tag)
+            // A `PUBLIC` declaration needs both of its literals to be quoted. Measured without one - an
+            // unquoted location and a declaration that carries only the identifier - the converter reads no
+            // declaration at all: nothing is fetched and the drawing is silently missing from the page. That
+            // is refused here rather than exported as a conversion with a hole in it.
+            if tag.contains("public"), literals.count < 2 { return true }
+            for literal in literals where !namesAPublicIdentifier(literal) && literal != standardSvgDtdLocation { return true }
         }
         return false
+    }
+
+    /// Whether a quoted declaration literal is a public identifier (`-//…` or `+//…`), which names the
+    /// declaration instead of a place, so the location rule below does not apply to it.
+    private static func namesAPublicIdentifier(_ literal: String) -> Bool {
+        literal.hasPrefix("-//") || literal.hasPrefix("+//")
+    }
+
+    /// The one DTD location a `.svg` part may point at: the W3C SVG 1.1 DTD. Held lowercased because a
+    /// declaration is matched case-insensitively - the canonical spelling is
+    /// `http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd` and an export that capitalises a path segment
+    /// differently still names the same remote file, never one on this machine.
+    private static let standardSvgDtdLocation = "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd".lowercased()
+
+    /// Every quoted string of a lowercased declaration, public identifier and location alike, in order. A
+    /// quote left open at the end of the tag yields an empty literal: such a declaration is not well-formed
+    /// XML, and reporting it keeps an unfinished literal from hiding a location.
+    private static func quotedDeclarationLiterals(_ tag: String) -> [String] {
+        var literals: [String] = []
+        var open: Character?
+        var literal = ""
+        for character in tag {
+            if let quote = open {
+                if character == quote {
+                    literals.append(literal)
+                    literal = ""
+                    open = nil
+                } else {
+                    literal.append(character)
+                }
+            } else if character == #"""# || character == "'" {
+                open = character
+                literal = ""
+            }
+        }
+        if open != nil { literals.append("") }
+        return literals
     }
 
     /// Drops an OOXML relationship that points outside the package through a

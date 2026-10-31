@@ -271,6 +271,87 @@ final class OfficeInputSanitizerTests: XCTestCase {
         }
     }
 
+    /// A `PUBLIC` declaration carries its location in a plain quoted string, so a `file:///` path sitting in
+    /// that position never meets the `SYSTEM` keyword test, and `stripReferences` does not look inside a
+    /// declaration at all. The absolute spelling, the package-relative one - with the named DTD actually
+    /// shipped beside the drawing - and an empty location are all refused: what is pinned is where a DTD may
+    /// come from, not which keyword introduced it.
+    func testSvgPartDeclaringADocumentTypeWithANonStandardLocationIsRefused() throws {
+        let fileLocation = #"<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "file:///etc/x.dtd">"#
+        let relativeLocation = #"<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "local.dtd">"#
+        let emptyLocation = #"<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "">"#
+        for declaration in [fileLocation, relativeLocation, emptyLocation] {
+            let drawing = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            \(declaration)
+            <svg xmlns="http://www.w3.org/2000/svg"><text x="0" y="2">A&nbsp;B</text></svg>
+            """
+            let fixture = try package([
+                "word/document.xml": "<w:document/>",
+                "word/media/diagram.svg": drawing,
+                "word/media/local.dtd": "<!ENTITY host SYSTEM \"file:///etc/hosts\">",
+            ])
+            defer { try? FileManager.default.removeItem(at: fixture.base) }
+            let output = fixture.base.appendingPathComponent(UUID().uuidString + ".docx")
+            XCTAssertThrowsError(try OfficeInputSanitizer.sanitize(fixture.input, output: output, token: .init()), declaration) { error in
+                guard case let NashiError.invalidInput(message) = error else { return XCTFail("expected invalidInput, got \(error)") }
+                XCTAssertTrue(message.contains("DOCTYPE"), message)
+            }
+        }
+    }
+
+    /// The two spellings that name a location without quoting one, and the one that carries no location
+    /// literal at all. Measured, the converter reads no declaration in these forms: the drawing is dropped from
+    /// the page and nothing is fetched, so they are refused rather than exported as a conversion with a hole.
+    func testSvgPartDeclaringAMalformedDocumentTypeIsRefused() throws {
+        let unquotedLocation = #"<!DOCTYPE svg PUBLIC -//W3C//DTD SVG 1.1//EN http://127.0.0.1:8099/x.dtd>"#
+        let identifierOnly = #"<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN">"#
+        let unterminatedLocation = #"<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "file:///etc/x.dtd>"#
+        for declaration in [unquotedLocation, identifierOnly, unterminatedLocation] {
+            let drawing = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            \(declaration)
+            <svg xmlns="http://www.w3.org/2000/svg"><text x="0" y="2">A&nbsp;B</text></svg>
+            """
+            let fixture = try package(["word/document.xml": "<w:document/>", "word/media/diagram.svg": drawing])
+            defer { try? FileManager.default.removeItem(at: fixture.base) }
+            let output = fixture.base.appendingPathComponent(UUID().uuidString + ".docx")
+            XCTAssertThrowsError(try OfficeInputSanitizer.sanitize(fixture.input, output: output, token: .init()), declaration) { error in
+                guard case let NashiError.invalidInput(message) = error else { return XCTFail("expected invalidInput, got \(error)") }
+                XCTAssertTrue(message.contains("DOCTYPE"), message)
+            }
+        }
+    }
+
+    /// The location is pinned, the identifier is not: an export that names a different public identifier but
+    /// points at the standard DTD URL has no host path to reach, so it converts like the standard declaration.
+    func testSvgPartDeclaringAnotherPublicIdentifierAtTheStandardLocationIsSanitised() throws {
+        let drawing = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.0//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+        <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"><image xlink:href="file:///tmp/\(secret).png"/><text x="0" y="2">A&nbsp;B</text></svg>
+        """
+        let fixture = try package(["word/document.xml": "<w:document/>", "word/media/diagram.svg": drawing])
+        defer { try? FileManager.default.removeItem(at: fixture.base) }
+        let parts = try sanitizedParts(fixture.input, extensions: ["svg"], base: fixture.base)
+        let staged = try XCTUnwrap(parts["word/media/diagram.svg"])
+        XCTAssertTrue(staged.contains("<!DOCTYPE svg PUBLIC"), "a declaration pointing at the standard DTD was dropped")
+        XCTAssertTrue(staged.contains(#"xlink:href="about:blank""#), "the drawing's host reference must still be neutralised")
+    }
+
+    /// A declaration with no location defines nothing and fetches nothing, so the empty form stays too.
+    func testSvgPartDeclaringADocumentTypeWithoutALocationIsSanitised() throws {
+        let drawing = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE svg>
+        <svg xmlns="http://www.w3.org/2000/svg"><text x="0" y="2">A&nbsp;B</text></svg>
+        """
+        let fixture = try package(["word/document.xml": "<w:document/>", "word/media/diagram.svg": drawing])
+        defer { try? FileManager.default.removeItem(at: fixture.base) }
+        let parts = try sanitizedParts(fixture.input, extensions: ["svg"], base: fixture.base)
+        XCTAssertTrue(try XCTUnwrap(parts["word/media/diagram.svg"]).contains("<!DOCTYPE svg>"), "the location-free declaration was dropped")
+    }
+
     func testDashPrefixedEntryNamesAreStoredInsteadOfReachingZipOptions() throws {
         let (input, base) = try package([
             "mimetype": "application/vnd.oasis.opendocument.text",
