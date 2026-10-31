@@ -109,8 +109,11 @@ enum OfficeInputSanitizer {
 
     /// A byte-order mark or whitespace may stand before the declaration, and
     /// UTF-16 stores an ASCII `<` beside a zero byte; behind anything else there
-    /// is no markup for the converter to find. The exact answer still comes from
-    /// `isXMLMarkup` once the file is decoded.
+    /// is no markup for the converter to find. A window that is nothing but those
+    /// padding bytes decides nothing, because markup can sit behind padding as
+    /// long as the window itself, so there the exact answer has to come from
+    /// `isXMLMarkup` once the file is decoded - which an empty or wholly padded
+    /// document still answers as no markup.
     private static func headSuggestsMarkup(_ input: URL) -> Bool {
         guard let handle = try? FileHandle(forReadingFrom: input), let head = try? handle.read(upToCount: 512) else { return false }
         for byte in head {
@@ -120,7 +123,7 @@ enum OfficeInputSanitizer {
             default: return false
             }
         }
-        return false
+        return head.count == 512
     }
 
     private static func isZIP(_ url: URL) -> Bool {
@@ -341,8 +344,13 @@ enum OfficeInputSanitizer {
     /// host path. Relative targets and hyperlinks stay: LibreOffice resolves
     /// them against the staged document only, and links are inert on import.
     private static let relationshipPattern = regex("<Relationship\\b(?:[^<>'\"]|\"[^\"]*\"|'[^']*')*(?:/>|>.*?</Relationship>)")
-    private static let targetPattern = regex("Target\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)')")
-    private static let targetModePattern = regex("TargetMode\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)')")
+    // Both names carry the boundary `referencePattern` keeps. `x:Target` and
+    // `data-TargetMode` are other attributes, and reading one of them as the real
+    // one hands the relationship its converter-visible meaning back: a prefixed
+    // `Target` can stand in for a host path and hide it, and a prefixed
+    // `TargetMode="Internal"` can claim a host path is document-internal.
+    private static let targetPattern = regex("(?<![-_A-Za-z0-9:])Target\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)')")
+    private static let targetModePattern = regex("(?<![-_A-Za-z0-9:])TargetMode\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)')")
 
     private static func stripRelationships(_ text: String) -> String {
         var result = text

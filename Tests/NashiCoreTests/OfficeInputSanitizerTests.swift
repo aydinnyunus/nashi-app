@@ -578,4 +578,65 @@ final class OfficeInputSanitizerTests: XCTestCase {
         try OfficeInputSanitizer.sanitize(input, output: output, token: .init())
         XCTAssertEqual(try Data(contentsOf: output), legacy, "A mislabelled legacy file must keep the converter's own detection")
     }
+    /// Padding is allowed before a declaration, and the window that decides
+    /// whether a flat input is worth reading at all is 512 bytes. Markup behind
+    /// padding that long was copied to the staging folder untouched, which hands
+    /// its `xlink:href="file:///..."` to the converter with no inspection at all.
+    /// Padding over a document that holds no markup is the same shape to read, so
+    /// it has to keep being copied as it is.
+    func testFlatMarkupBehindAWholeWindowOfWhitespaceIsStripped() throws {
+        let base = try OutputFiles.temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: base) }
+        let padding = String(repeating: " ", count: 600)
+        let flat = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <office:document-content xmlns:xlink="http://www.w3.org/1999/xlink><draw:frame xlink:href="file:///tmp/\(secret).png"/><office:body><office:text><text:p>Text</text:p></office:text></office:body></office:document-content>
+        """
+        let input = base.appendingPathComponent("padded.odt")
+        try (padding + flat).write(to: input, atomically: true, encoding: .utf8)
+        let output = base.appendingPathComponent(UUID().uuidString + ".odt")
+        try OfficeInputSanitizer.sanitize(input, output: output, token: .init())
+        let text = try DocumentText.read(output)
+        XCTAssertEqual(text.components(separatedBy: "about:blank").count - 1, 1,
+                       "markup behind a window of whitespace was staged without inspection")
+        XCTAssertFalse(text.contains(secret), "a host path behind a window of whitespace reached the converter")
+        XCTAssertTrue(text.contains("<draw:frame"), "the padded document lost its own markup")
+
+        let prose = padding + "Notes\n"
+        let proseInput = base.appendingPathComponent("padded.txt")
+        try prose.write(to: proseInput, atomically: true, encoding: .utf8)
+        let proseOutput = base.appendingPathComponent(UUID().uuidString + ".txt")
+        try OfficeInputSanitizer.sanitize(proseInput, output: proseOutput, token: .init())
+        XCTAssertEqual(try Data(contentsOf: proseOutput), Data(prose.utf8), "padded text lost its bytes")
+    }
+
+    /// `Target` and `TargetMode` are the only two names the converter reads on a
+    /// relationship, and the sanitizer has to agree. `x:Target` and `x:TargetMode`
+    /// are other attributes, so a prefixed name placed in front of the real one
+    /// cannot stand in for it: a prefixed `Target` hides the host path behind a
+    /// package-internal value, and a prefixed `TargetMode="Internal"` claims a
+    /// relationship that the converter will still follow out of the document.
+    func testPrefixedRelationshipAttributesCannotHideAHostPath() throws {
+        let rels = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+        <Relationship Id="rIdPrefixedTarget" x:Target="media/decoy.png" Target="file:///tmp/\(secret).png" TargetMode="External"/>
+        <Relationship Id="rIdPrefixedMode" data-TargetMode="Internal" x:TargetMode="Internal" Target="file:///tmp/\(secret).png" TargetMode="External"/>
+        <Relationship Id="rIdInternal" Target="media/other.png" TargetMode="Internal"/>
+        <Relationship Id="rIdLink" Type="hyperlink" Target="https://example.com/keep-me" TargetMode="External"/>
+        </Relationships>
+        """
+        let (input, base) = try package(["word/document.xml": "<w:document/>",
+                                         "word/_rels/document.xml.rels": rels])
+        defer { try? FileManager.default.removeItem(at: base) }
+        let parts = try sanitizedParts(input, extensions: ["rels"], base: base)
+        let text = try XCTUnwrap(parts["word/_rels/document.xml.rels"], "The relationship part never reached the staged package")
+        XCTAssertFalse(text.contains(secret), "a host path behind a prefixed attribute survived")
+        for hidden in ["rIdPrefixedTarget", "rIdPrefixedMode"] {
+            XCTAssertFalse(text.contains(hidden), "the relationship behind a decoy attribute stayed: \(hidden)")
+        }
+        for kept in ["rIdInternal", "rIdLink"] {
+            XCTAssertTrue(text.contains(kept), "removal reached a relationship that is not a host path: \(kept)")
+        }
+    }
 }
