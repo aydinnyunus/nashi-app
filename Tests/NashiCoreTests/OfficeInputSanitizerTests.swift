@@ -190,8 +190,10 @@ final class OfficeInputSanitizerTests: XCTestCase {
         let parts = try sanitizedParts(control.input, extensions: ["xml"], base: control.base)
         let staged = try XCTUnwrap(parts["word/document.xml"])
         XCTAssertTrue(staged.contains("<!-- \(declaration) -->"), String(staged.prefix(200)))
-        XCTAssertTrue(staged.contains("xlink:href="))
-        XCTAssertFalse(staged.contains(secret))
+        // The preserved comment quotes the host path itself, so the secret name cannot
+        // be the check here. What has to be gone is a reference the parser would use.
+        XCTAssertTrue(staged.contains(#"xlink:href="about:blank""#), "the real attribute next to the comment must be neutralised")
+        XCTAssertFalse(staged.contains(#"href="file:"#), "a live host target survived")
     }
 
     /// The flat path takes the same verdict, and a CDATA section is the mirror case
@@ -224,7 +226,10 @@ final class OfficeInputSanitizerTests: XCTestCase {
         try OfficeInputSanitizer.sanitize(cdataInput, output: cdataOutput, token: .init())
         let staged = try DocumentText.read(cdataOutput)
         XCTAssertTrue(staged.contains("<![CDATA[\(declaration)]]>"), String(staged.prefix(200)))
-        XCTAssertFalse(staged.contains(secret))
+        // Same reason as in the comment case: the CDATA section is kept verbatim and it
+        // quotes the host path, so only a reference a parser would resolve has to go.
+        XCTAssertTrue(staged.contains(#"xlink:href="about:blank""#), "the real attribute next to the CDATA section must be neutralised")
+        XCTAssertFalse(staged.contains(#"href="file:"#), "a live host target survived")
     }
 
     /// A drawn SVG part is the exception: the converter refuses to load one whose standard `PUBLIC`
