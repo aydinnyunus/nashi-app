@@ -66,7 +66,7 @@ final class OfficeInputSanitizerTests: XCTestCase {
     func testHostPathAttributesAreNeutralisedWithoutRewritingOtherParts() throws {
         let document = """
         <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-        <w:document xmlns:xlink="http://www.w3.org/1999/xlink">
+        <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:xlink="http://www.w3.org/1999/xlink">
         <w:body><img xlink:href="file:///tmp/\(secret).png"/><img xl:href='file:///tmp/\(secret).png'/>        <img x:href="&#47;etc/passwd"/><img xlink:href="c:\\tmp\\\(secret).png"/><span data-src="file:///tmp/\(secret)-kept.png"/></w:body></w:document>
         """
         let vector = "<svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\"><image xlink:href=\"file:///tmp/\(secret).png\"/></svg>"
@@ -87,7 +87,7 @@ final class OfficeInputSanitizerTests: XCTestCase {
     func testHostPathXMLBaseIsNeutralisedAndRelativeBasesSurvive() throws {
         let document = """
         <?xml version="1.0" encoding="UTF-8"?>
-        <office:document-content xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="file:///tmp/\(secret)/">
+        <office:document-content xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="file:///tmp/\(secret)/">
         <draw:image xlink:href="picture.png"/>
         <draw:frame xml:base='&#102;ile:///tmp/\(secret)/'><draw:image xlink:href="other.png"/></draw:frame>
         <draw:frame xml:base="images/"><draw:image xlink:href="inside.png"/></draw:frame>
@@ -118,7 +118,7 @@ final class OfficeInputSanitizerTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: base) }
         let flat = """
         <?xml version="1.0" encoding="UTF-8"?>
-        <office:document-content xmlns:xlink="http://www.w3.org/1999/xlink"><office:body><office:text><text:p>xml:base="file:///tmp</text:p><draw:image xlink:href="Pictures/kept.png"/><text:p>the src="file:///tmp/deep.png" in this sentence is prose</text:p><draw:image xlink:href="file:///tmp/\(secret).png"/></office:text></office:body></office:document-content>
+        <office:document-content xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:xlink="http://www.w3.org/1999/xlink"><office:body><office:text><text:p>xml:base="file:///tmp</text:p><draw:image xlink:href="Pictures/kept.png"/><text:p>the src="file:///tmp/deep.png" in this sentence is prose</text:p><draw:image xlink:href="file:///tmp/\(secret).png"/></office:text></office:body></office:document-content>
         """
         let input = base.appendingPathComponent("prose.odt")
         try flat.write(to: input, atomically: true, encoding: .utf8)
@@ -144,7 +144,7 @@ final class OfficeInputSanitizerTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: base) }
         let flat = """
         <?xml version="1.0" encoding="UTF-8"?>
-        <office:document-content xmlns:xlink="http://www.w3.org/1999/xlink"><text:p>an inch is written " and an apostrophe's too</text:p><draw:image xlink:href="file:///tmp/\(secret)-hidden.png"/><draw:image xlink:href="file:///tmp/edge>\(secret)-quoted.png"/></office:document-content>
+        <office:document-content xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:xlink="http://www.w3.org/1999/xlink"><text:p>an inch is written " and an apostrophe's too</text:p><draw:image xlink:href="file:///tmp/\(secret)-hidden.png"/><draw:image xlink:href="file:///tmp/edge>\(secret)-quoted.png"/></office:document-content>
         """
         let input = base.appendingPathComponent("quotes.odt")
         try flat.write(to: input, atomically: true, encoding: .utf8)
@@ -167,7 +167,7 @@ final class OfficeInputSanitizerTests: XCTestCase {
         let declared = """
         <?xml version="1.0" encoding="UTF-8"?>
         \(declaration)
-        <office:document-content xmlns:xlink="http://www.w3.org/1999/xlink"><draw:image xlink:href="&host;"/></office:document-content>
+        <office:document-content xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:xlink="http://www.w3.org/1999/xlink"><draw:image xlink:href="&host;"/></office:document-content>
         """
         let fixture = try package(["word/document.xml": declared, "word/_rels/document.xml.rels": "<Relationships/>"])
         defer { try? FileManager.default.removeItem(at: fixture.base) }
@@ -183,7 +183,7 @@ final class OfficeInputSanitizerTests: XCTestCase {
         let commented = """
         <?xml version="1.0" encoding="UTF-8"?>
         <!-- \(declaration) -->
-        <office:document-content xmlns:xlink="http://www.w3.org/1999/xlink"><draw:image xlink:href="file:///tmp/\(secret).png"/></office:document-content>
+        <office:document-content xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:xlink="http://www.w3.org/1999/xlink"><draw:image xlink:href="file:///tmp/\(secret).png"/></office:document-content>
         """
         let control = try package(["word/document.xml": commented, "word/_rels/document.xml.rels": "<Relationships/>"])
         defer { try? FileManager.default.removeItem(at: control.base) }
@@ -206,7 +206,7 @@ final class OfficeInputSanitizerTests: XCTestCase {
         let declared = """
         <?xml version="1.0" encoding="UTF-8"?>
         \(declaration)
-        <office:document-content xmlns:xlink="http://www.w3.org/1999/xlink"><draw:image xlink:href="&host;"/></office:document-content>
+        <office:document-content xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:xlink="http://www.w3.org/1999/xlink"><draw:image xlink:href="&host;"/></office:document-content>
         """
         let input = base.appendingPathComponent("declared.odt")
         try declared.write(to: input, atomically: true, encoding: .utf8)
@@ -218,7 +218,7 @@ final class OfficeInputSanitizerTests: XCTestCase {
 
         let quoted = """
         <?xml version="1.0" encoding="UTF-8"?>
-        <office:document-content xmlns:xlink="http://www.w3.org/1999/xlink"><text:p><![CDATA[\(declaration)]]></text:p><draw:image xlink:href="file:///tmp/\(secret).png"/></office:document-content>
+        <office:document-content xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:xlink="http://www.w3.org/1999/xlink"><text:p><![CDATA[\(declaration)]]></text:p><draw:image xlink:href="file:///tmp/\(secret).png"/></office:document-content>
         """
         let cdataInput = base.appendingPathComponent("quoted.odt")
         try quoted.write(to: cdataInput, atomically: true, encoding: .utf8)
@@ -428,7 +428,7 @@ final class OfficeInputSanitizerTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: base) }
         let flat = """
         <?xml version="1.0" encoding="UTF-8"?>
-        <office:document-content xmlns:xlink="http://www.w3.org/1999/xlink">        <draw:image xlink:href="file:///tmp/\(secret).png"/><draw:image xlink:href='file:///tmp/\(secret).png'/>        </office:document-content>
+        <office:document-content xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:xlink="http://www.w3.org/1999/xlink">        <draw:image xlink:href="file:///tmp/\(secret).png"/><draw:image xlink:href='file:///tmp/\(secret).png'/>        </office:document-content>
         """
         let input = base.appendingPathComponent("flat.odt")
         try flat.write(to: input, atomically: true, encoding: .utf8)
@@ -445,7 +445,7 @@ final class OfficeInputSanitizerTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: base) }
         let flat = """
         <?xml version="1.0" encoding='UTF-16' standalone='yes'?>
-        <office:document-content xmlns:xlink="http://www.w3.org/1999/xlink"><draw:image xlink:href="file:///tmp/\(secret).png"/></office:document-content>
+        <office:document-content xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:xlink="http://www.w3.org/1999/xlink"><draw:image xlink:href="file:///tmp/\(secret).png"/></office:document-content>
         """
         let input = base.appendingPathComponent("declared.odt")
         let payload = try XCTUnwrap(flat.data(using: .utf16LittleEndian))
@@ -521,7 +521,7 @@ final class OfficeInputSanitizerTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: base) }
         let flat = """
         <?xml version="1.0" encoding="UTF-8"?>
-        <office:document-content xmlns:xlink="http://www.w3.org/1999/xlink"><draw:image xlink:href="file:///tmp/\(secret).png"/></office:document-content>
+        <office:document-content xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:xlink="http://www.w3.org/1999/xlink"><draw:image xlink:href="file:///tmp/\(secret).png"/></office:document-content>
         """
         for name in ["legacy", "flat.rtf", "sheet", "deck", "document"] {
             let input = base.appendingPathComponent(name).appendingPathExtension(name.hasPrefix("flat.") ? "rtf" : "doc")
@@ -537,7 +537,7 @@ final class OfficeInputSanitizerTests: XCTestCase {
         let declared = """
         <?xml version="1.0" encoding="UTF-8"?>
         <!DOCTYPE office:document-content [<!ENTITY host "file:///tmp/\(secret).png">]>
-        <office:document-content xmlns:xlink="http://www.w3.org/1999/xlink"><draw:image xlink:href="&host;"/></office:document-content>
+        <office:document-content xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:xlink="http://www.w3.org/1999/xlink"><draw:image xlink:href="&host;"/></office:document-content>
         """
         let declaredInput = base.appendingPathComponent("declared").appendingPathExtension("doc")
         try declared.write(to: declaredInput, atomically: true, encoding: .utf8)
@@ -578,7 +578,7 @@ final class OfficeInputSanitizerTests: XCTestCase {
         try OfficeInputSanitizer.sanitize(input, output: output, token: .init())
         XCTAssertEqual(try Data(contentsOf: output), legacy, "A mislabelled legacy file must keep the converter's own detection")
     }
-    /// Padding is allowed before a declaration, and the window that decides
+    /// Padding may sit in front of a document, and the window that decides
     /// whether a flat input is worth reading at all is 512 bytes. Markup behind
     /// padding that long was copied to the staging folder untouched, which hands
     /// its `xlink:href="file:///..."` to the converter with no inspection at all.
@@ -589,8 +589,7 @@ final class OfficeInputSanitizerTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: base) }
         let padding = String(repeating: " ", count: 600)
         let flat = """
-        <?xml version="1.0" encoding="UTF-8"?>
-        <office:document-content xmlns:xlink="http://www.w3.org/1999/xlink><draw:frame xlink:href="file:///tmp/\(secret).png"/><office:body><office:text><text:p>Text</text:p></office:text></office:body></office:document-content>
+        <office:document-content xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:xlink="http://www.w3.org/1999/xlink"><draw:frame xlink:href="file:///tmp/\(secret).png"/><office:body><office:text><text:p>Text</text:p></office:text></office:body></office:document-content>
         """
         let input = base.appendingPathComponent("padded.odt")
         try (padding + flat).write(to: input, atomically: true, encoding: .utf8)
@@ -619,7 +618,7 @@ final class OfficeInputSanitizerTests: XCTestCase {
     func testPrefixedRelationshipAttributesCannotHideAHostPath() throws {
         let rels = """
         <?xml version="1.0" encoding="UTF-8"?>
-        <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+        <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships" xmlns:x="urn:example:decoy">
         <Relationship Id="rIdPrefixedTarget" x:Target="media/decoy.png" Target="file:///tmp/\(secret).png" TargetMode="External"/>
         <Relationship Id="rIdPrefixedMode" data-TargetMode="Internal" x:TargetMode="Internal" Target="file:///tmp/\(secret).png" TargetMode="External"/>
         <Relationship Id="rIdInternal" Target="media/other.png" TargetMode="Internal"/>
