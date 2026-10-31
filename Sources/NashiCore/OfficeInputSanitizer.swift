@@ -242,9 +242,11 @@ enum OfficeInputSanitizer {
     /// standard W3C SVG 1.1 DTD URL. The location rule is what catches `<!DOCTYPE svg PUBLIC
     /// "-//W3C//DTD SVG 1.1//EN" "file:///etc/x.dtd">` and a `"local.dtd"` shipped inside the package: a PUBLIC
     /// form carries its location as a plain quoted string, so the `SYSTEM` keyword test never sees it, and
-    /// `stripReferences` does not look inside a declaration. The public identifier (`-//…`) names the
-    /// declaration rather than a place, so it stays free-form and a real export with a different identifier but
-    /// the standard location still converts; only where a DTD would be fetched from is pinned. That this
+    /// `stripReferences` does not look inside a declaration. The location is read by position - the second
+    /// literal of the declaration - so nothing sitting in that slot is exempt for looking like an identifier,
+    /// and a third literal is refused because a declaration has nothing else to quote. The public identifier
+    /// itself is not compared, since it names the declaration rather than a place, and an export with a
+    /// different identifier at the standard location still converts. That this
     /// converter reads no named DTD at all is measured too - a `SYSTEM "file:///…/evil.dtd"` declaration whose
     /// entity points at a local file failed to load rather than printing it - but nothing here leans on it, so
     /// a converter build this machine has not measured cannot widen the rule through it.
@@ -254,20 +256,23 @@ enum OfficeInputSanitizer {
             guard tag.hasPrefix("<!doctype") else { continue }
             if tag.contains("[") || tag.contains("system") || tag.contains("entity") { return true }
             let literals = quotedDeclarationLiterals(tag)
-            // A `PUBLIC` declaration needs both of its literals to be quoted. Measured without one - an
-            // unquoted location and a declaration that carries only the identifier - the converter reads no
-            // declaration at all: nothing is fetched and the drawing is silently missing from the page. That
-            // is refused here rather than exported as a conversion with a hole in it.
-            if tag.contains("public"), literals.count < 2 { return true }
-            for literal in literals where !namesAPublicIdentifier(literal) && literal != standardSvgDtdLocation { return true }
+            // The accepted spellings are the two an export actually carries: a declaration with no quoted
+            // literal, and a `PUBLIC` declaration whose location - its second literal, by position - is
+            // the standard DTD. Position is what makes this a location check: a literal that begins with
+            // `-//x.dtd` is a location when it sits in that slot, and exempting anything that looked like an
+            // identifier would let such a literal name a file beside the drawing.
+            if tag.contains("public") {
+                // A `PUBLIC` declaration missing either of its literals is refused too. Measured without
+                // one - an unquoted location and a declaration that carries only the identifier - the
+                // converter reads no declaration at all: nothing is fetched and the drawing is silently
+                // missing from the page. That is refused here rather than exported as a conversion with a
+                // hole in it.
+                if literals.count != 2 || literals[1] != standardSvgDtdLocation { return true }
+            } else if !literals.isEmpty {
+                return true
+            }
         }
         return false
-    }
-
-    /// Whether a quoted declaration literal is a public identifier (`-//…` or `+//…`), which names the
-    /// declaration instead of a place, so the location rule below does not apply to it.
-    private static func namesAPublicIdentifier(_ literal: String) -> Bool {
-        literal.hasPrefix("-//") || literal.hasPrefix("+//")
     }
 
     /// The one DTD location a `.svg` part may point at: the W3C SVG 1.1 DTD. Held lowercased because a
