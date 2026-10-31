@@ -10,13 +10,24 @@ import Foundation
 /// image placeholder. Package entries are rewritten without touching their
 /// internal paths, so a freshly prepared file still converts identically.
 enum OfficeInputSanitizer {
-    static let formats: Set<String> = ["docx", "xlsx", "pptx", "odt", "ods", "odp"]
+    /// Formats the converter reads through an explicit text import, so it never
+    /// chooses a markup parser for them and no reference can be resolved.
+    static let textFormats: Set<String> = ["txt", "md", "csv", "tsv"]
+
+    /// Whether the staged copy of an input has to be inspected. For everything
+    /// else the converter picks its parser from the content of the file, not
+    /// from the extension it carries, so the extension cannot decide what is
+    /// inspected: flat markup saved as `.doc` is still parsed as markup.
+    static func inspects(_ format: String) -> Bool { !textFormats.contains(format) }
 
     static func sanitize(_ input: URL, output: URL, token: CancellationToken) throws {
-        switch input.pathExtension.lowercased() {
-        case "docx", "xlsx", "pptx", "odt", "ods", "odp": try stagePackage(input, output: output, token: token)
-        default: try FileManager.default.copyItem(at: input, to: output)
+        guard inspects(input.pathExtension.lowercased()) else {
+            try FileManager.default.copyItem(at: input, to: output)
+            return
         }
+        // A package signature is unpacked as a package whatever extension it
+        // carries; anything else is read the way the converter would read it.
+        try stagePackage(input, output: output, token: token)
     }
 
     private static func stagePackage(_ input: URL, output: URL, token: CancellationToken) throws {
@@ -67,6 +78,10 @@ enum OfficeInputSanitizer {
             try? fm.removeItem(at: output)
             try fm.copyItem(at: input, to: output)
         }
+        // Deciding by reading as text costs a legacy binary or a large PDF the
+        // whole file, and the converter only finds markup behind a declaration
+        // or a root element, so the first bytes settle that question first.
+        guard headSuggestsMarkup(input) else { try copyUnchanged(); return }
         guard let text = try? DocumentText.read(input), isXMLMarkup(text) else { try copyUnchanged(); return }
         guard !declaresDocumentType(text) else { throw NashiError.invalidInput("This document declares an XML document type (DOCTYPE), which Nashi does not convert.") }
         try token.check()
@@ -90,6 +105,22 @@ enum OfficeInputSanitizer {
             result.replaceSubrange(value, with: "UTF-8")
         }
         return result
+    }
+
+    /// A byte-order mark or whitespace may stand before the declaration, and
+    /// UTF-16 stores an ASCII `<` beside a zero byte; behind anything else there
+    /// is no markup for the converter to find. The exact answer still comes from
+    /// `isXMLMarkup` once the file is decoded.
+    private static func headSuggestsMarkup(_ input: URL) -> Bool {
+        guard let handle = try? FileHandle(forReadingFrom: input), let head = try? handle.read(upToCount: 512) else { return false }
+        for byte in head {
+            switch byte {
+            case 0x00, 0x09...0x0D, 0x20, 0xBB, 0xBF, 0xEF, 0xFE, 0xFF: continue
+            case 0x3C: return true
+            default: return false
+            }
+        }
+        return false
     }
 
     private static func isZIP(_ url: URL) -> Bool {
@@ -311,7 +342,7 @@ enum OfficeInputSanitizer {
     /// them against the staged document only, and links are inert on import.
     private static let relationshipPattern = regex("<Relationship\\b(?:[^<>'\"]|\"[^\"]*\"|'[^']*')*(?:/>|>.*?</Relationship>)")
     private static let targetPattern = regex("Target\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)')")
-    private static let externalModePattern = regex("TargetMode\\s*=\\s*(?:\"External\"|'External')")
+    private static let targetModePattern = regex("TargetMode\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)')")
 
     private static func stripRelationships(_ text: String) -> String {
         var result = text
@@ -325,10 +356,20 @@ enum OfficeInputSanitizer {
 
     private static func isHostTarget(_ element: String) -> Bool {
         let full = NSRange(element.startIndex..., in: element)
-        guard externalModePattern.firstMatch(in: element, range: full) != nil,
+        guard let mode = targetModePattern.firstMatch(in: element, range: full),
+              let modeValue = attributeValue(mode, in: element, doubleQuoted: 1, singleQuoted: 2),
+              isExternalMode(modeValue.value),
               let found = targetPattern.firstMatch(in: element, range: full),
               let value = attributeValue(found, in: element, doubleQuoted: 1, singleQuoted: 2) else { return false }
         return isHostPath(value.value)
+    }
+
+    /// `Ext&#101;rnal` is `External` to the converter: it decodes character
+    /// references in every attribute value before it reads them, as it does for
+    /// the target, and the token type of the attribute ignores the encoding, the
+    /// case and the surrounding whitespace.
+    private static func isExternalMode(_ value: String) -> Bool {
+        decodeCharacterReferences(value).trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "external"
     }
 
     /// A value the converter resolves outside the staged document. The converter
