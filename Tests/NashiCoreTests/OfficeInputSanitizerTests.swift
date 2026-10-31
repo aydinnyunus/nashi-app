@@ -481,6 +481,93 @@ final class OfficeInputSanitizerTests: XCTestCase {
                       "no swift test --filter line in source.yml runs OfficeInputSanitizerTests")
     }
 
+    /// The converter decodes character references in every attribute value, not
+    /// only in the target, so `Ext&#101;rnal` opens a relationship with a host
+    /// path just as the spelled mode does. Decimal, hexadecimal, surrounding
+    /// spacing, a single-quoted value and a capitalised remainder are all the
+    /// same mode to the converter, so all of them have to be removed here.
+    func testCharacterReferenceEncodedTargetModeIsRemovedLikeTheSpelledMode() throws {
+        let rels = """
+        <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+        <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+        <Relationship Id="rIdDecimal" Type="image" Target="file:///tmp/\(secret).png" TargetMode="Ext&#101;rnal"/>
+        <Relationship Id="rIdHex" Type="image" Target="file:///tmp/\(secret).png" TargetMode="&#x45;xternal"/>
+        <Relationship Id="rIdSpacing" Type="image" Target="file:///tmp/\(secret).png" TargetMode = " Ext&#101;RNAL "/>
+        <Relationship Id="rIdSingle" Type="image" Target='file:///tmp/\(secret).png' TargetMode='&#69;XTERNAL'/>
+        <Relationship Id="rIdLiteral" Type="image" Target="file:///tmp/\(secret).png" TargetMode="External"/>
+        <Relationship Id="rIdMedia" Type="image" Target="media/picture.png"/>
+        <Relationship Id="rIdInternal" Type="image" Target="media/other.png" TargetMode="Internal"/>
+        <Relationship Id="rIdLink" Type="hyperlink" Target="https://example.com/keep-me" TargetMode="External"/>
+        </Relationships>
+        """
+        let (input, base) = try package(["_rels/document.xml.rels": rels, "word/document.xml": "<a/>"])
+        defer { try? FileManager.default.removeItem(at: base) }
+        let parts = try sanitizedParts(input, extensions: ["rels"], base: base)
+        let text = try XCTUnwrap(parts["_rels/document.xml.rels"], "The relationship part never reached the staged package")
+        for removed in ["rIdDecimal", "rIdHex", "rIdSpacing", "rIdSingle", "rIdLiteral"] {
+            XCTAssertFalse(text.contains(removed), "\(removed) keeps a host path behind an encoded mode")
+        }
+        XCTAssertFalse(text.contains("file:///"), "a live host target survived: \(text)")
+        XCTAssertTrue(text.contains("rIdMedia"))
+        XCTAssertTrue(text.contains("rIdInternal"), "An internal target must survive whatever mode it names")
+        XCTAssertTrue(text.contains("keep-me"), "An inert external hyperlink must survive conversion")
+    }
+
+    /// The converter chooses its parser from the content of the file, so the
+    /// extension an input carries cannot decide whether it is inspected: the same
+    /// flat markup saved as `.doc` would have reached the parser untouched.
+    func testFlatMarkupSavedUnderAnotherNameIsStrippedAndBinaryKept() throws {
+        let base = try OutputFiles.temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: base) }
+        let flat = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <office:document-content xmlns:xlink="http://www.w3.org/1999/xlink"><draw:image xlink:href="file:///tmp/\(secret).png"/></office:document-content>
+        """
+        for name in ["legacy", "flat.rtf", "sheet", "deck", "document"] {
+            let input = base.appendingPathComponent(name).appendingPathExtension(name.hasPrefix("flat.") ? "rtf" : "doc")
+            try flat.write(to: input, atomically: true, encoding: .utf8)
+            let output = base.appendingPathComponent(UUID().uuidString).appendingPathExtension(input.pathExtension)
+            try OfficeInputSanitizer.sanitize(input, output: output, token: .init())
+            let staged = try DocumentText.read(output)
+            XCTAssertEqual(staged.components(separatedBy: "about:blank").count - 1, 1, "flat markup named \(input.lastPathComponent) was not neutralised")
+            XCTAssertFalse(staged.contains(secret), "flat markup named \(input.lastPathComponent) kept its host path")
+        }
+
+        // Refusal follows the same rule as the known flat shapes.
+        let declared = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE office:document-content [<!ENTITY host "file:///tmp/\(secret).png">]>
+        <office:document-content xmlns:xlink="http://www.w3.org/1999/xlink"><draw:image xlink:href="&host;"/></office:document-content>
+        """
+        let declaredInput = base.appendingPathComponent("declared").appendingPathExtension("doc")
+        try declared.write(to: declaredInput, atomically: true, encoding: .utf8)
+        XCTAssertThrowsError(try OfficeInputSanitizer.sanitize(declaredInput, output: base.appendingPathComponent(UUID().uuidString + ".doc"), token: .init())) { error in
+            guard case let NashiError.invalidInput(message) = error else { return XCTFail("expected invalidInput, got \(error)") }
+            XCTAssertTrue(message.contains("DOCTYPE"), message)
+        }
+
+        // A legacy binary document keeps its own bytes: the converter has to be
+        // able to run its own detection on the format it is asked to open.
+        let legacy = Data([0xD0, 0xCF, 0x11, 0xE0] + Array("Target=\"file:///tmp/\(secret).png\"".utf8))
+        for name in ["compound", "word", "calc"] {
+            let input = base.appendingPathComponent(name).appendingPathExtension("doc")
+            try legacy.write(to: input)
+            let output = base.appendingPathComponent(UUID().uuidString).appendingPathExtension("doc")
+            try OfficeInputSanitizer.sanitize(input, output: output, token: .init())
+            XCTAssertEqual(try Data(contentsOf: output), legacy, "a binary document named \(input.lastPathComponent) was rewritten")
+        }
+
+        // The text formats reach the converter through an explicit text import, so
+        // no parser is chosen from their content and their bytes have to survive.
+        for name in ["notes.txt", "readme.md", "table.csv", "table.tsv"] {
+            let input = base.appendingPathComponent(name)
+            try flat.write(to: input, atomically: true, encoding: .utf8)
+            let output = base.appendingPathComponent(UUID().uuidString).appendingPathExtension(input.pathExtension)
+            try OfficeInputSanitizer.sanitize(input, output: output, token: .init())
+            XCTAssertEqual(try Data(contentsOf: output), Data(flat.utf8), "\(name) is imported as text and must not be rewritten")
+        }
+    }
+
     func testNonMarkupInputIsCopiedByteForByte() throws {
         let base = try OutputFiles.temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: base) }
