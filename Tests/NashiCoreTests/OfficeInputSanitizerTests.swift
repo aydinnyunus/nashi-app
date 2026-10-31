@@ -227,6 +227,45 @@ final class OfficeInputSanitizerTests: XCTestCase {
         XCTAssertFalse(staged.contains(secret))
     }
 
+    /// A drawn SVG part is the exception: the converter refuses to load one whose standard `PUBLIC`
+    /// declaration is gone, so a declaration that defines nothing survives sanitising here while the drawing's
+    /// own host reference is still rewritten. Refusing these files whole was the reported bug.
+    func testSvgPartKeepingAPublicDocumentTypeIsSanitisedNotRefused() throws {
+        let drawing = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+        <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="3cm" height="3cm"><image xlink:href="file:///tmp/\(secret).png" width="3cm" height="3cm"/><text x="0" y="2">A&nbsp;B</text></svg>
+        """
+        let fixture = try package(["word/document.xml": "<w:document/>", "word/media/diagram.svg": drawing])
+        defer { try? FileManager.default.removeItem(at: fixture.base) }
+        let parts = try sanitizedParts(fixture.input, extensions: ["svg"], base: fixture.base)
+        let staged = try XCTUnwrap(parts["word/media/diagram.svg"])
+        XCTAssertTrue(staged.contains("<!DOCTYPE svg PUBLIC"), "the declaration the converter needs was dropped")
+        XCTAssertTrue(staged.contains(#"xlink:href="about:blank""#), "the drawing's host reference must still be neutralised")
+    }
+
+    /// The tolerance stops where a declaration could define something. An internal subset and a `SYSTEM`
+    /// literal both leave the converter an entity to expand - the file a `SYSTEM` literal names can travel
+    /// inside the same package - so an SVG part carrying either is refused exactly like every other markup part.
+    func testSvgPartDeclaringAnExpandableDocumentTypeIsRefused() throws {
+        let subset = #"<!DOCTYPE svg [<!ENTITY host "file:///tmp/"# + secret + #".png">]>"#
+        let system = #"<!DOCTYPE svg SYSTEM "evil.dtd">"#
+        for declaration in [subset, system] {
+            let drawing = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            \(declaration)
+            <svg xmlns="http://www.w3.org/1999/xlink" xmlns="http://www.w3.org/2000/svg"><image xlink:href="&host;"/></svg>
+            """
+            let fixture = try package(["word/document.xml": "<w:document/>", "word/media/diagram.svg": drawing])
+            defer { try? FileManager.default.removeItem(at: fixture.base) }
+            let output = fixture.base.appendingPathComponent(UUID().uuidString + ".docx")
+            XCTAssertThrowsError(try OfficeInputSanitizer.sanitize(fixture.input, output: output, token: .init()), declaration) { error in
+                guard case let NashiError.invalidInput(message) = error else { return XCTFail("expected invalidInput, got \(error)") }
+                XCTAssertTrue(message.contains("DOCTYPE"), message)
+            }
+        }
+    }
+
     func testDashPrefixedEntryNamesAreStoredInsteadOfReachingZipOptions() throws {
         let (input, base) = try package([
             "mimetype": "application/vnd.oasis.opendocument.text",

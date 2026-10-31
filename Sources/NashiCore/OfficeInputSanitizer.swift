@@ -30,8 +30,12 @@ enum OfficeInputSanitizer {
         for part in markupParts(in: unpacked) {
             try token.check()
             let text = try DocumentText.read(part)
-            guard !declaresDocumentType(text) else { throw NashiError.invalidInput("This document declares an XML document type (DOCTYPE), which Nashi does not convert.") }
-            let clean = part.pathExtension.lowercased() == "rels" ? stripRelationships(text) : stripReferences(text)
+            let extensionName = part.pathExtension.lowercased()
+            // A drawn SVG is the one markup part whose document type declaration is tolerated; see
+            // `declaresAnExpandableDocumentType` for the narrow shape that survives and why.
+            let refuses = extensionName == "svg" ? declaresAnExpandableDocumentType(text) : declaresDocumentType(text)
+            guard !refuses else { throw NashiError.invalidInput("This document declares an XML document type (DOCTYPE), which Nashi does not convert.") }
+            let clean = extensionName == "rels" ? stripRelationships(text) : stripReferences(text)
             if clean != text { try reencode(clean).write(to: part, atomically: true, encoding: .utf8) }
         }
         try token.check()
@@ -226,6 +230,27 @@ enum OfficeInputSanitizer {
     /// same string written in a paragraph or inside a comment does not trip this.
     private static func declaresDocumentType(_ text: String) -> Bool {
         for range in tagRanges(in: text) where text[range].lowercased().hasPrefix("<!doctype") { return true }
+        return false
+    }
+
+    /// A drawn `.svg` part does carry a document type declaration in the wild, and this converter will not
+    /// load the part without one: measured with the pinned sandbox profile, `A&nbsp;B` inside `<text>` renders
+    /// with the standard `<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" …>` declaration and the same file
+    /// reports "source file could not be loaded" once the declaration is removed. The declaration is therefore
+    /// kept here, in this one part type, and only while it can define nothing: no internal subset (`[…]`), no
+    /// `SYSTEM` literal, no entity declaration. A `SYSTEM` literal is refused because the package can ship the
+    /// named file beside the drawing, and a subset is refused because it defines the entity inside the part;
+    /// either would leave the converter an entity to expand, which is the shape this file exists to stop. That
+    /// the converter does not read the named DTD at all is measured too - a `SYSTEM "file:///…/evil.dtd"`
+    /// declaration whose entity points at a local file failed to load rather than printing it - so keeping a
+    /// `PUBLIC` declaration costs nothing the converter was already using. Only this machine's converter is
+    /// measured, so every refused spelling stays refused on both platforms.
+    private static func declaresAnExpandableDocumentType(_ text: String) -> Bool {
+        for range in tagRanges(in: text) {
+            let tag = text[range].lowercased()
+            guard tag.hasPrefix("<!doctype") else { continue }
+            if tag.contains("[") || tag.contains("system") || tag.contains("entity") { return true }
+        }
         return false
     }
 
